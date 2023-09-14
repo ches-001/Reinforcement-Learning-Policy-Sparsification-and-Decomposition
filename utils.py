@@ -3,6 +3,7 @@ import torch.nn as nn
 import  torch, copy
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import matplotlib.pyplot as plt
 from models import PolicyNet, SparsePolicyNet, L0Linear
 from torch.distributions.categorical import Categorical
@@ -187,14 +188,19 @@ def run_evaluation(
     return eps_reward, avg_policy_entropy, pole_angle_variance
 
 
-def plot_result_dataframe(df: pd.DataFrame, x_axis: str, figsize=(20, 21)):
+def plot_result_dataframe(df: pd.DataFrame, x_axis: str, figsize=(20, 21), plot_type: str="line"):
+    assert plot_type in ["line", "bar"], "plot_type can only be line or bar"
+
     cols = list(df.columns.copy())
     cols.remove(x_axis)
     _, axs = plt.subplots(len(cols), 1, figsize=figsize)
-    
+
     for idx, col in enumerate(cols):
-        axs[idx].grid(True)
-        axs[idx].plot(df[x_axis], df[col])
+        if plot_type =="line":
+            axs[idx].grid(True)
+            axs[idx].plot(df[x_axis], df[col])
+        else:
+            sns.barplot(data=df, x=x_axis, y=df[col], ax=axs[idx], color="blue")
         axs[idx].set_xlabel(x_axis)
         axs[idx].set_ylabel(col)
         axs[idx].set_title(f"{col} VS {x_axis}")
