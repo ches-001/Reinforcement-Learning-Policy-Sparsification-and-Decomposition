@@ -23,7 +23,8 @@ class PPOTrainer:
             kl_div_coef: float=0.01,
             n_policy_train_steps: int=100,
             n_value_train_steps: int=100,
-            sparse_penalty_coef: Optional[float]=None
+            sparse_penalty_coef: Optional[float]=None,
+            maximize_entropy: bool=False,
         ):
         
         self.policy_agent = policy_agent
@@ -37,6 +38,7 @@ class PPOTrainer:
         self.n_policy_train_steps = n_policy_train_steps
         self.n_value_train_steps = n_value_train_steps
         self.sparse_penalty_coef = sparse_penalty_coef
+        self.maximize_entropy = maximize_entropy
 
     
     def _custom_collate_fn(self, batch: Iterable[torch.Tensor]):
@@ -73,7 +75,12 @@ class PPOTrainer:
                 .clamp(1-self.epsilon, 1+self.epsilon)
             )
             policy_loss = -torch.min(policy_ratio * gaes, clipped_policy_ratio * gaes)
-            policy_loss = policy_loss + (self.kl_div_coef * action_dist.entropy())
+
+            if self.maximize_entropy:
+                policy_loss = policy_loss - (self.kl_div_coef * action_dist.entropy())
+            else:
+                policy_loss = policy_loss + (self.kl_div_coef * action_dist.entropy())
+
             policy_loss = policy_loss.mean()
             if isinstance(self.policy_agent, SparsePolicyNet):
                 policy_loss = policy_loss + (self.sparse_penalty_coef * sparse_penalty / obs.shape[0])
