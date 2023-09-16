@@ -20,7 +20,7 @@ class PPOTrainer:
             value_optimzier: torch.optim.Optimizer,
             *,
             epsilon: float=0.2, 
-            kl_div_coef: float=0.01,
+            entropy_coef: float=0.01,
             n_policy_train_steps: int=100,
             n_value_train_steps: int=100,
             sparse_penalty_coef: Optional[float]=None,
@@ -34,7 +34,7 @@ class PPOTrainer:
         self.policy_optimizer = policy_optimizer
         self.value_optimizer = value_optimzier
         self.epsilon = epsilon
-        self.kl_div_coef = kl_div_coef
+        self.entropy_coef = entropy_coef
         self.n_policy_train_steps = n_policy_train_steps
         self.n_value_train_steps = n_value_train_steps
         self.sparse_penalty_coef = sparse_penalty_coef
@@ -77,9 +77,9 @@ class PPOTrainer:
             policy_loss = -torch.min(policy_ratio * gaes, clipped_policy_ratio * gaes)
 
             if self.maximize_entropy:
-                policy_loss = policy_loss - (self.kl_div_coef * action_dist.entropy())
+                policy_loss = policy_loss - (self.entropy_coef * action_dist.entropy())
             else:
-                policy_loss = policy_loss + (self.kl_div_coef * action_dist.entropy())
+                policy_loss = policy_loss + (self.entropy_coef * action_dist.entropy())
                 
             policy_loss = policy_loss.mean()
             if isinstance(self.policy_agent, SparsePolicyNet):
