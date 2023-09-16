@@ -80,7 +80,7 @@ class PPOTrainer:
                 policy_loss = policy_loss - (self.kl_div_coef * action_dist.entropy())
             else:
                 policy_loss = policy_loss + (self.kl_div_coef * action_dist.entropy())
-
+                
             policy_loss = policy_loss.mean()
             if isinstance(self.policy_agent, SparsePolicyNet):
                 policy_loss = policy_loss + (self.sparse_penalty_coef * sparse_penalty / obs.shape[0])
