@@ -188,7 +188,13 @@ def run_evaluation(
     return eps_reward, avg_policy_entropy, pole_angle_variance
 
 
-def plot_result_dataframe(df: pd.DataFrame, x_axis: str, figsize=(20, 21), plot_type: str="line"):
+def plot_result_dataframe(
+        df: pd.DataFrame, 
+        x_axis: str, 
+        figsize=(20, 21), 
+        hm_figsize=(10, 7),
+        plot_type: str="line", 
+        with_heatmap: bool=False):
     assert plot_type in ["line", "bar"], "plot_type can only be line or bar"
 
     cols = list(df.columns.copy())
@@ -205,6 +211,13 @@ def plot_result_dataframe(df: pd.DataFrame, x_axis: str, figsize=(20, 21), plot_
         axs[idx].set_ylabel(col)
         axs[idx].set_title(f"{col} VS {x_axis}")
     plt.show()
+
+    if with_heatmap:
+        print("\n\n")
+        plt.figure(figsize=hm_figsize)
+        sns.heatmap(df.corr().fillna(0), annot=True, cmap="coolwarm", center=0)
+        plt.title("Heatmap plot")
+        plt.show()
 
 
 def plot_train_performance(train_performance: Dict[str, List], best_rewards: Dict[str, List]):
