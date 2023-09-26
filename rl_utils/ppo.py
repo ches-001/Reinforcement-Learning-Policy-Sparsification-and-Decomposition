@@ -7,15 +7,16 @@ import gym, torch, tqdm, os, copy
 import numpy as np
 from torch.distributions.categorical import Categorical
 from typing import Tuple, Iterable, Dict, Union, Optional
-from models import PolicyNet, SparsePolicyNet
+from models import PolicyNet, ConvPolicyNet, SparsePolicyNet, SparseConvPolicyNet
 
 os.environ["DEVICE"] = "cuda" if torch.cuda.is_available() else "cpu"
+os.environ["ENV_SEED"] = "3407"
 
 class PPOTrainer:
     def __init__(
             self, 
-            policy_agent: Union[PolicyNet, SparsePolicyNet], 
-            value_agent: Union[PolicyNet, SparsePolicyNet], 
+            policy_agent: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet], 
+            value_agent: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet], 
             policy_optimizer: torch.optim.Optimizer,
             value_optimzier: torch.optim.Optimizer,
             *,
@@ -24,13 +25,15 @@ class PPOTrainer:
             n_policy_train_steps: int=100,
             n_value_train_steps: int=100,
             sparse_penalty_coef: Optional[float]=None,
-            maximize_entropy: bool=False,
+            maximize_entropy: bool=True,
+            clip_policy_grads: bool=False,
+            clip_value_grads: bool=False,
         ):
         
         self.policy_agent = policy_agent
-        self.policy_agent.to(os.environ["DEVICE"] )
+        self.policy_agent.to(os.environ["DEVICE"])
         self.value_agent = value_agent
-        self.value_agent.to(os.environ["DEVICE"] )
+        self.value_agent.to(os.environ["DEVICE"])
         self.policy_optimizer = policy_optimizer
         self.value_optimizer = value_optimzier
         self.epsilon = epsilon
@@ -39,6 +42,8 @@ class PPOTrainer:
         self.n_value_train_steps = n_value_train_steps
         self.sparse_penalty_coef = sparse_penalty_coef
         self.maximize_entropy = maximize_entropy
+        self.clip_policy_grads = clip_policy_grads
+        self.clip_value_grads = clip_value_grads
 
     
     def _custom_collate_fn(self, batch: Iterable[torch.Tensor]):
@@ -60,7 +65,7 @@ class PPOTrainer:
         for _ in range(self.n_policy_train_steps):
             self.policy_optimizer.zero_grad()
 
-            if isinstance(self.policy_agent, SparsePolicyNet):
+            if isinstance(self.policy_agent, SparsePolicyNet) or isinstance(self.policy_agent, SparseConvPolicyNet):
                 new_logits, sparse_penalty = self.policy_agent(obs)
             
             else:
@@ -82,9 +87,14 @@ class PPOTrainer:
                 policy_loss = policy_loss + (self.entropy_coef * action_dist.entropy())
                 
             policy_loss = policy_loss.mean()
-            if isinstance(self.policy_agent, SparsePolicyNet):
+            if isinstance(self.policy_agent, SparsePolicyNet) or isinstance(self.policy_agent, SparseConvPolicyNet):
                 policy_loss = policy_loss + (self.sparse_penalty_coef * sparse_penalty / obs.shape[0])
             policy_loss.backward()
+
+            if self.clip_policy_grads:
+                for param in self.policy_agent.parameters():
+                    param.grad.data.clamp(-1.0, 1.0)
+
             self.policy_optimizer.step()
 
 
@@ -95,7 +105,7 @@ class PPOTrainer:
         for _ in range(self.n_value_train_steps):
             self.value_optimizer.zero_grad()
 
-            if isinstance(self.value_agent, SparsePolicyNet):
+            if isinstance(self.value_agent, SparsePolicyNet) or isinstance(self.value_agent, SparseConvPolicyNet):
                 values, sparse_penalty = self.value_agent(obs)
                 loss = ((values - returns) ** 2) + (self.sparse_penalty_coef * sparse_penalty / obs.shape[0])
             else:
@@ -103,15 +113,20 @@ class PPOTrainer:
                 loss = (values - returns) ** 2
             loss = loss.mean()
             loss.backward()
+
+            if self.clip_value_grads:
+                for param in self.value_agent.parameters():
+                    param.grad.data.clamp(-1.0, 1.0)
+
             self.value_optimizer.step()
 
 
-    def save_policy(self, filename:str, dir:str="params"):
+    def save_policy(self, filename:str, dir:str="../params"):
         if not os.path.isdir(dir):os.mkdir(dir)
         torch.save(self.policy_agent.state_dict(), os.path.join(dir, filename))
 
 
-def discount_reward(rewards: np.ndarray, gamma: float=0.99):
+def discount_reward(rewards: np.ndarray, gamma: float=0.99) -> np.ndarray:
     # n_Σ_(k=t) (r_(t + k) * γ ^ (k))
     discounted_rewards = []
     discount_t = 0
@@ -119,10 +134,16 @@ def discount_reward(rewards: np.ndarray, gamma: float=0.99):
     for r in reversed(rewards):
         discount_t = discount_t * gamma + r
         discounted_rewards.insert(0, discount_t)
+    discounted_rewards = np.array(discounted_rewards)
     return discounted_rewards
 
 
-def compute_gaes(rewards: np.ndarray, values: np.ndarray, gamma: float=0.99, lambda_: float=0.97):
+def compute_gaes(
+        rewards: np.ndarray, 
+        values: np.ndarray, 
+        gamma: float=0.99, 
+        lambda_: float=0.97) -> np.ndarray:
+    
     next_values = np.concatenate((values[1:], np.zeros(1)))
     deltas = rewards + (gamma * (next_values - values))
     gaes = []
@@ -131,15 +152,17 @@ def compute_gaes(rewards: np.ndarray, values: np.ndarray, gamma: float=0.99, lam
     for delta in reversed(deltas):
         gae_t = delta + (gamma * lambda_ * gae_t)
         gaes.insert(0, gae_t)
+    gaes = np.array(gaes)
     return gaes
 
 
 def rollout(
         env: gym.Env, 
-        policy_agent: Union[PolicyNet, SparsePolicyNet], 
-        value_agent: Union[PolicyNet, SparsePolicyNet], 
-        max_steps: int=1000
-    ):
+        policy_agent: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet], 
+        value_agent: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet],
+        max_rollout_steps: Optional[int]=None, 
+    ) -> Dict[str, np.ndarray]:
+
     experience = {
         "observations": [],
         "actions": [],
@@ -148,17 +171,19 @@ def rollout(
         "act_log_probs": [],
     }
 
-    obs, _ = env.reset()
+    obs, _ = env.reset(seed=int(os.environ["ENV_SEED"]))
     eps_reward = 0
-    for _ in range(max_steps):
+    max_rollout_steps = max_rollout_steps or env._max_episode_steps
+    
+    for _ in range(0, max_rollout_steps):
         _obs = torch.tensor([obs], dtype=torch.float32, device=os.environ["DEVICE"])
 
-        if isinstance(policy_agent, SparsePolicyNet):
+        if isinstance(policy_agent, SparsePolicyNet) or isinstance(policy_agent, SparseConvPolicyNet):
             action_logits, _ = policy_agent(_obs)
         else:
             action_logits = policy_agent(_obs)
 
-        if isinstance(policy_agent, SparsePolicyNet):
+        if isinstance(policy_agent, SparsePolicyNet) or isinstance(policy_agent, SparseConvPolicyNet):
             value, _ = value_agent(_obs)
         else:
             value = value_agent(_obs)
@@ -186,7 +211,7 @@ def rollout(
     return experience, eps_reward
 
 
-def format_policy_data(data: Dict[str, np.ndarray]):
+def format_policy_data(data: Dict[str, torch.Tensor]):
     data = copy.deepcopy(data)
     data["observations"] = torch.tensor(data["observations"], dtype=torch.float32, device=os.environ["DEVICE"])
     data["actions"] = torch.tensor(data["actions"], dtype=torch.int32, device=os.environ["DEVICE"])
@@ -202,16 +227,21 @@ def train(
         env: gym.Env, 
         ppo: PPOTrainer, 
         *,
-        n_episodes: int=100, 
+        n_episodes: int=400, 
         gamma: float=0.99, 
         lambda_: float=0.97, 
-        max_rollout_steps: int=1000,
         max_episode_reward: Union[int, float]=200,
+        max_rollout_steps: Optional[int]=None,
         continue_after_max_reward: bool=False,
         policy_weights_filename: Optional[str]="CartPolev0_PPO_policy_agent.pth.tar",
         save_best_weights: bool=True,
         verbose: bool=False,
         close_env: bool=False,
+        normalize_returns: bool=False,
+        normalize_gaes: bool=False,
+        scale_obs: bool=False,
+        obs_low: Optional[Union[int, np.ndarray, torch.Tensor]]=None,
+        obs_high: Optional[Union[int, np.ndarray, torch.Tensor]]=None,
     ) -> Tuple[Dict[str, Iterable], Dict[str, Iterable]]:
 
     train_performance = {
@@ -223,24 +253,43 @@ def train(
         'rewards': []
     }
 
+    if scale_obs:
+        obs_low = obs_low or env.observation_space.low
+        obs_high = obs_high or env.observation_space.high
+
+        obs_low = obs_low if not isinstance(obs_low, torch.Tensor) else obs_low.numpy()
+        obs_high = obs_high if not isinstance(obs_high, torch.Tensor) else obs_high.numpy()
+    else:
+        obs_low = 0
+        obs_high = 1
+
     best_reward = -np.inf
-    for episode in tqdm.tqdm(range(n_episodes)):
+    for episode in tqdm.tqdm(range(0, n_episodes)):
         data, episode_reward = rollout(
             env, 
             ppo.policy_agent, 
             ppo.value_agent, 
-            max_rollout_steps
+            max_rollout_steps=max_rollout_steps
         )
+
         data["returns"] = discount_reward(data["rewards"], gamma)
         data["gaes"] = compute_gaes(data["rewards"], data["values"], gamma, lambda_)
-        data = format_policy_data(data)
 
+        if normalize_returns:
+            data["returns"] = (data["returns"] - data["returns"].mean()) / data["returns"].std()
+        
+        if normalize_gaes:
+            data["gaes"] = (data["gaes"] - data["gaes"].mean()) / data["gaes"].std()
+
+        data["observations"] = (data["observations"] - obs_low) / (obs_high - obs_low)
+
+        data = format_policy_data(data)
         ppo.train_policy_net(data["observations"], data["actions"], data["act_log_probs"], data["gaes"])
         ppo.train_value_net(data["observations"], data["returns"])
 
         train_performance["rewards"].append(episode_reward)
 
-        if episode_reward >= best_reward:
+        if episode_reward > best_reward:
             best_reward = episode_reward
             if verbose:
                 print(f'best total reward for episode {episode+1}: {episode_reward}')

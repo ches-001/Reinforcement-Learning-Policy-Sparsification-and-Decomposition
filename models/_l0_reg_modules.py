@@ -68,3 +68,42 @@ class L0Linear(L0NormModule):
         weight_mask, l0_penalty = self._compute_mask_and_penalty()
         output = F.linear(x, weight=self._layer.weight * weight_mask, bias=self._layer.bias)
         return output, l0_penalty
+    
+
+class L0Conv2d(L0NormModule):
+    def __init__(
+            self, 
+            in_channels: int, 
+            out_channels: int, 
+            kernel_size: int, 
+            stride: int=1, 
+            padding: int=0, 
+            dilation: int=1, 
+            groups: int=1, 
+            bias: bool=True, **kwargs):
+        
+        layer = nn.Conv2d(
+            in_channels, 
+            out_channels, 
+            kernel_size, 
+            stride, 
+            padding, 
+            dilation, 
+            groups, 
+            bias
+        )
+        super(L0Conv2d, self).__init__(layer, **kwargs)
+
+
+    def forward(self, x: torch.Tensor):
+        weight_mask, l0_penalty = self._compute_mask_and_penalty()
+        output = F.conv2d(
+            x, 
+            weight=self._layer.weight * weight_mask, 
+            bias=self._layer.bias, 
+            stride=self._layer.stride, 
+            padding=self._layer.padding, 
+            dilation=self._layer.dilation, 
+            groups=self._layer.groups
+        )
+        return output, l0_penalty

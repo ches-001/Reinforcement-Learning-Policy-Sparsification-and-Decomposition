@@ -5,20 +5,22 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from models import PolicyNet, SparsePolicyNet, L0Linear
+from models import PolicyNet, ConvPolicyNet, SparsePolicyNet, SparseConvPolicyNet, L0Linear, L0Conv2d
+from custom_env_wrappers import FormatFrameWrapper, MaxAndSkipEnv
 from torch.distributions.categorical import Categorical
 from typing import Tuple, Union, Dict, Optional, List
 
+os.environ["ENV_SEED"] = "3407"
 
 # model weight initialisation function
 def xavier_init_weights(m):
-    if isinstance(m, nn.Linear):
+    if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
         nn.init.xavier_uniform_(m.weight)
         if torch.is_tensor(m.bias):
             m.bias.data.fill_(0.01)
 
 
-def save_model_params(params, filename:str, dir:str="params"):
+def save_model_params(params, filename:str, dir:str="../params"):
     if not os.path.isdir(dir):os.mkdir(dir)
     torch.save(params, os.path.join(dir, filename))
 
@@ -44,13 +46,23 @@ def compute_svd(
         return u, s, v_t
 
 
-def compile_sparse_model(model: SparsePolicyNet) -> PolicyNet:
-    _model = PolicyNet(
-        model.input_size, 
-        model.output_size, 
-        model.hidden_size).to(model.fc1._layer.weight.data.device)
+def compile_sparse_model(model: Union[SparsePolicyNet, SparseConvPolicyNet]) -> Union[PolicyNet, ConvPolicyNet]:
+    if isinstance(model, SparseConvPolicyNet):
+        _model = ConvPolicyNet(
+            model.in_channels, 
+            model.out_features, 
+            model.obs_h, 
+            model.obs_w
+        )
+    else:
+        _model = PolicyNet(
+            model.input_size, 
+            model.output_size, 
+            model.hidden_size).to(model.fc1._layer.weight.data.device)
     
-    layers = list(i[0] for i in model.named_children() if isinstance(i[1], L0Linear))
+    layers = list(
+        i[0] for i in model.named_children() if isinstance(i[1], L0Linear) or isinstance(i[1], L0Conv2d)
+    )
 
     for layer in layers:
         z, _ = getattr(getattr(model, layer), "_compute_mask_and_penalty")()
@@ -68,18 +80,20 @@ def compile_sparse_model(model: SparsePolicyNet) -> PolicyNet:
 
 
 def low_rank_approximate_policy(
-        model: Union[PolicyNet, SparsePolicyNet], 
+        model: Union[PolicyNet, ConvPolicyNet, SparsePolicyNet, SparseConvPolicyNet], 
         rank: int,
         lra_w_decimals: int=6
     ) -> Tuple[PolicyNet, float]:
     
     model = copy.deepcopy(model)
     is_sparse = False
-    if isinstance(model, SparsePolicyNet):
+    if isinstance(model, SparsePolicyNet) or isinstance(model, SparseConvPolicyNet):
         model = compile_sparse_model(model)
         is_sparse = True
 
-    layers = list(i[0] for i in model.named_children() if isinstance(i[1], nn.Linear))
+    layers = list(
+        i[0] for i in model.named_children() if isinstance(i[1], nn.Linear) or isinstance(i[1], nn.Conv2d)
+    )
     original_w_sizes = []
     lra_w_d_sizes = []
 
@@ -87,8 +101,18 @@ def low_rank_approximate_policy(
 
     for layer in layers:
         w = getattr(model, layer).weight.data.clone()
-        u, s, vt = compute_svd(w, rank=rank, is_sparse=is_sparse)
-        lra_w = torch.matmul(torch.matmul(u, s), vt)
+
+        if isinstance(layer, nn.Conv2d):
+            w_shape = w.shape
+            w = w.flatten(start_dim=1, end_dim=-1)
+            u, s, vt = compute_svd(w, rank=rank, is_sparse=is_sparse)
+            lra_w = torch.matmul(torch.matmul(u, s), vt)
+            lra_w = lra_w.reshape(*w_shape)
+
+        else:
+            u, s, vt = compute_svd(w, rank=rank, is_sparse=is_sparse)
+            lra_w = torch.matmul(torch.matmul(u, s), vt)
+
         if is_sparse:
             lra_w = lra_w.round(decimals=lra_w_decimals)
         setattr(getattr(getattr(model, layer), "weight"), "data", lra_w)
@@ -107,10 +131,12 @@ def low_rank_approximate_policy(
 
 
 def compute_weight_sparsity(model: Union[PolicyNet, SparsePolicyNet]) -> Tuple[Dict, float]:
-        if isinstance(model, SparsePolicyNet):
+        if isinstance(model, SparsePolicyNet) or isinstance(model, SparseConvPolicyNet):
               return model.compute_weight_sparsity()
         
-        layers = list(i[0] for i in model.named_children() if isinstance(i[1], L0Linear))
+        layers = list(
+            i[0] for i in model.named_children() if isinstance(i[1], L0Linear) or isinstance(i[1], L0Conv2d)
+        )
         get_layer_sparisty = lambda z : z[z==0].shape[0] / (z.shape[0] * z.shape[1])
 
         layer_sparsities = {}
@@ -121,12 +147,31 @@ def compute_weight_sparsity(model: Union[PolicyNet, SparsePolicyNet]) -> Tuple[D
         return layer_sparsities, percent_sparisty
 
 
+def make_atari_env(
+        env_id: str, 
+        render_mode: str=None, 
+        full_action_space: bool=False,
+        nstack: int=4,
+        scale_pixels: bool=True, 
+        grayscale_obs: bool=True,
+        obs_size: Tuple[int, int]=(64, 64))->gym.Env:
+    
+    env = gym.make(env_id, render_mode=render_mode, full_action_space=full_action_space)
+    if grayscale_obs:
+        env = gym.wrappers.GrayScaleObservation(env)
+    env = gym.wrappers.ResizeObservation(env, obs_size)
+    env = gym.wrappers.FrameStack(env, nstack)
+    env = FormatFrameWrapper(env, scale=scale_pixels)
+    env = MaxAndSkipEnv(env, nstack)
+    return env
+
+
 def evaluate_policy(
         env: gym.Env, 
-        policy_agent: Union[PolicyNet, SparsePolicyNet], 
+        policy_agent: Union[PolicyNet, ConvPolicyNet, SparsePolicyNet, SparseConvPolicyNet], 
         max_episode_steps: int=1000,
         close_env: bool=False,
-        env_seed: Optional[int]=None
+        env_seed: Optional[int]=int(os.environ["ENV_SEED"])
     ) -> Tuple[Union[int, float], float, float]:
 
     policy_agent.eval()
@@ -134,12 +179,11 @@ def evaluate_policy(
 
     total_reward = 0
     avg_policy_entropy = 0
-    pole_angles = []
     for _ in range(max_episode_steps):
         _obs = torch.tensor([obs], dtype=torch.float32, device=os.environ["DEVICE"])
 
         with torch.no_grad():
-            if isinstance(policy_agent, SparsePolicyNet):
+            if isinstance(policy_agent, SparsePolicyNet) or isinstance(policy_agent, SparseConvPolicyNet):
                 action_logits, _ = policy_agent(_obs)
             else:
                 action_logits = policy_agent(_obs)
@@ -154,38 +198,35 @@ def evaluate_policy(
 
         policy_entropy = Categorical(logits=action_logits).entropy()
         avg_policy_entropy += policy_entropy.item()
-        pole_angles.append(obs[2])
 
         total_reward += reward
         if truncated or terminate: break
 
     avg_policy_entropy /= max_episode_steps
-    pole_angle_variance = (np.asarray(pole_angles).std())**2
     if close_env:
         env.close()
-    return total_reward, avg_policy_entropy, pole_angle_variance
+    return total_reward, avg_policy_entropy
 
 
 def run_evaluation(
-        policy_agent: Union[PolicyNet, SparsePolicyNet], 
-        render_mode: Optional[str]=None, 
+        env: gym.Env,
+        policy_agent: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet],
+        max_episode_steps: int=10_000, 
         verbose: bool=True,
-    ) -> Tuple[Union[int, float], float, float]:
-    env = gym.make("CartPole-v1", render_mode=render_mode)
+    ) -> Tuple[Union[int, float], float]:
 
-    eps_reward, avg_policy_entropy, pole_angle_variance = evaluate_policy(
+    eps_reward, avg_policy_entropy = evaluate_policy(
         env, 
         policy_agent, 
-        max_episode_steps=env._max_episode_steps, 
+        max_episode_steps=max_episode_steps, 
         close_env=True, 
         env_seed=int(os.environ["ENV_SEED"]),
     )
     if verbose:
         print(f"Evaluation reward of policy: {eps_reward}")
-        print(f"Average policy entropy of policy: {round(avg_policy_entropy, 7)}")
-        print(f"Pole angle variance of policy: {round(pole_angle_variance, 7)} rads")
-    
-    return eps_reward, avg_policy_entropy, pole_angle_variance
+        print(f"Average entropy of policy: {round(avg_policy_entropy, 7)}")
+
+    return eps_reward, avg_policy_entropy
 
 
 def plot_result_dataframe(
@@ -193,8 +234,8 @@ def plot_result_dataframe(
         x_axis: str, 
         figsize=(20, 21), 
         hm_figsize=(10, 7),
-        plot_type: str="line", 
-        with_heatmap: bool=False):
+        plot_type: str="bar", 
+        with_heatmap: bool=True):
     assert plot_type in ["line", "bar"], "plot_type can only be line or bar"
 
     cols = list(df.columns.copy())
