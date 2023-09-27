@@ -7,7 +7,7 @@ import gym, torch, tqdm, os, copy
 import numpy as np
 from torch.distributions.categorical import Categorical
 from typing import Tuple, Iterable, Dict, Union, Optional
-from models import PolicyNet, ConvPolicyNet, SparsePolicyNet, SparseConvPolicyNet
+from models import BaseDensePolicyNet, BaseSparsePolicyNet
 
 os.environ["DEVICE"] = "cuda" if torch.cuda.is_available() else "cpu"
 os.environ["ENV_SEED"] = "3407"
@@ -15,8 +15,8 @@ os.environ["ENV_SEED"] = "3407"
 class PPOTrainer:
     def __init__(
             self, 
-            policy_agent: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet], 
-            value_agent: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet], 
+            policy_agent: Union[BaseDensePolicyNet, BaseSparsePolicyNet], 
+            value_agent: Union[BaseDensePolicyNet, BaseSparsePolicyNet], 
             policy_optimizer: torch.optim.Optimizer,
             value_optimzier: torch.optim.Optimizer,
             *,
@@ -65,7 +65,7 @@ class PPOTrainer:
         for _ in range(self.n_policy_train_steps):
             self.policy_optimizer.zero_grad()
 
-            if isinstance(self.policy_agent, SparsePolicyNet) or isinstance(self.policy_agent, SparseConvPolicyNet):
+            if issubclass(self.policy_agent.__class__, BaseSparsePolicyNet):
                 new_logits, sparse_penalty = self.policy_agent(obs)
             
             else:
@@ -87,8 +87,9 @@ class PPOTrainer:
                 policy_loss = policy_loss + (self.entropy_coef * action_dist.entropy())
                 
             policy_loss = policy_loss.mean()
-            if isinstance(self.policy_agent, SparsePolicyNet) or isinstance(self.policy_agent, SparseConvPolicyNet):
+            if issubclass(self.policy_agent.__class__, BaseSparsePolicyNet):
                 policy_loss = policy_loss + (self.sparse_penalty_coef * sparse_penalty / obs.shape[0])
+                
             policy_loss.backward()
 
             if self.clip_policy_grads:
@@ -105,7 +106,7 @@ class PPOTrainer:
         for _ in range(self.n_value_train_steps):
             self.value_optimizer.zero_grad()
 
-            if isinstance(self.value_agent, SparsePolicyNet) or isinstance(self.value_agent, SparseConvPolicyNet):
+            if issubclass(self.value_agent.__class__, BaseSparsePolicyNet):
                 values, sparse_penalty = self.value_agent(obs)
                 loss = ((values - returns) ** 2) + (self.sparse_penalty_coef * sparse_penalty / obs.shape[0])
             else:
@@ -158,8 +159,8 @@ def compute_gaes(
 
 def rollout(
         env: gym.Env, 
-        policy_agent: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet], 
-        value_agent: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet],
+        policy_agent: Union[BaseDensePolicyNet, BaseSparsePolicyNet], 
+        value_agent: Union[BaseDensePolicyNet, BaseSparsePolicyNet],
         max_rollout_steps: Optional[int]=None, 
     ) -> Dict[str, np.ndarray]:
 
@@ -178,12 +179,12 @@ def rollout(
     for _ in range(0, max_rollout_steps):
         _obs = torch.tensor([obs], dtype=torch.float32, device=os.environ["DEVICE"])
 
-        if isinstance(policy_agent, SparsePolicyNet) or isinstance(policy_agent, SparseConvPolicyNet):
+        if issubclass(policy_agent.__class__, BaseSparsePolicyNet):
             action_logits, _ = policy_agent(_obs)
         else:
             action_logits = policy_agent(_obs)
 
-        if isinstance(policy_agent, SparsePolicyNet) or isinstance(policy_agent, SparseConvPolicyNet):
+        if issubclass(policy_agent.__class__, BaseSparsePolicyNet):
             value, _ = value_agent(_obs)
         else:
             value = value_agent(_obs)

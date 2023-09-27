@@ -3,7 +3,37 @@ import torch.nn as nn
 from ._l0_reg_modules import L0Linear, L0Conv2d
 from typing import Dict, Tuple
 
-class PolicyNet(nn.Module):
+
+class BaseDensePolicyNet(nn.Module):
+    def __init__(self):
+        super(BaseDensePolicyNet, self).__init__()
+
+    def forward(self, x: torch.Tensor):
+        pass
+
+
+class BaseSparsePolicyNet(nn.Module):
+    def __init__(self):
+        super(BaseSparsePolicyNet, self).__init__()
+
+    def forward(self, x: torch.Tensor):
+        pass
+
+    def compute_weight_sparsity(self) -> Tuple[Dict, float]:
+        get_layer_sparisty = lambda z : z[z==0].shape[0] / (z.shape[0] * z.shape[1])
+        layers = list(
+            i[0] for i in self.named_children() if isinstance(i[1], L0Linear) or isinstance(i[1], L0Conv2d)
+        )
+        layer_sparsities = {}
+        for layer in layers:
+            z, _ = getattr(self, layer)._compute_mask_and_penalty()
+            layer_sparsities[layer] = get_layer_sparisty(z)
+
+        percent_sparisty = sum(list(layer_sparsities.values())) / len(layer_sparsities)
+        return layer_sparsities, percent_sparisty
+
+
+class PolicyNet(BaseDensePolicyNet):
     def __init__(self, input_size:int, output_size:int, hidden_size:int=128):
         super(PolicyNet, self).__init__()
         
@@ -25,7 +55,7 @@ class PolicyNet(nn.Module):
         return output
     
 
-class SparsePolicyNet(nn.Module):
+class SparsePolicyNet(BaseSparsePolicyNet):
     def __init__(
             self, 
             input_size:int, 
@@ -51,20 +81,9 @@ class SparsePolicyNet(nn.Module):
         output, p4 = self.fc4(self.mid_layer_activation(output))
         penalty = p1 + p2 + p3 + p4
         return output, penalty
-    
-    def compute_weight_sparsity(self) -> Tuple[Dict, float]:
-        get_layer_sparisty = lambda z : z[z==0].shape[0] / (z.shape[0] * z.shape[1])
-        layers = list(i[0] for i in self.named_children() if isinstance(i[1], L0Linear))
-        layer_sparsities = {}
-        for layer in layers:
-            z, _ = getattr(self, layer)._compute_mask_and_penalty()
-            layer_sparsities[layer] = get_layer_sparisty(z)
-
-        percent_sparisty = sum(list(layer_sparsities.values())) / len(layer_sparsities)
-        return layer_sparsities, percent_sparisty
 
 
-class ConvPolicyNet(nn.Module):
+class ConvPolicyNet(BaseDensePolicyNet):
     def __init__(self, in_channels: int, out_features: int, obs_h: int, obs_w: int):
         super(ConvPolicyNet, self).__init__()
 
@@ -95,7 +114,7 @@ class ConvPolicyNet(nn.Module):
         return output
 
 
-class SparseConvPolicyNet(nn.Module):
+class SparseConvPolicyNet(BaseSparsePolicyNet):
     def __init__(self, in_channels: int, out_features: int, obs_h: int, obs_w: int):
         super(SparseConvPolicyNet, self).__init__()
 
@@ -125,16 +144,3 @@ class SparseConvPolicyNet(nn.Module):
         output, p4 = self.fc(self.mid_activation_layer(output))
         p = p1 + p2 + p3 + p4
         return output, p
-    
-    def compute_weight_sparsity(self) -> Tuple[Dict, float]:
-        get_layer_sparisty = lambda z : z[z==0].shape[0] / (z.shape[0] * z.shape[1])
-        layers = list(
-            i[0] for i in self.named_children() if isinstance(i[1], L0Linear) or isinstance(i[1], L0Conv2d)
-        )
-        layer_sparsities = {}
-        for layer in layers:
-            z, _ = getattr(self, layer)._compute_mask_and_penalty()
-            layer_sparsities[layer] = get_layer_sparisty(z)
-
-        percent_sparisty = sum(list(layer_sparsities.values())) / len(layer_sparsities)
-        return layer_sparsities, percent_sparisty

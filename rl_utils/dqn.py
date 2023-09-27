@@ -8,7 +8,7 @@ import torch.nn as nn
 import numpy as np
 from collections import deque
 from typing import Tuple, Iterable, Dict, Union, Optional
-from models import PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet
+from models import BaseDensePolicyNet, BaseSparsePolicyNet
 
 os.environ["DEVICE"] = "cuda" if torch.cuda.is_available() else "cpu"
 os.environ["ENV_SEED"] = "3407"
@@ -48,11 +48,11 @@ class ReplayMemory:
 
 
 def getActionQValues(
-        agent_model: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet], 
+        agent_model: Union[BaseDensePolicyNet, BaseSparsePolicyNet], 
         observation:torch.Tensor):
     observation = observation.to(os.getenv("DEVICE"))
     with torch.no_grad():
-        if isinstance(agent_model, SparsePolicyNet) or isinstance(agent_model, SparseConvPolicyNet):
+        if issubclass(agent_model.__class__, BaseSparsePolicyNet):
             q_values, _ = agent_model(observation)
         else:
             q_values = agent_model(observation)
@@ -90,8 +90,8 @@ def optimimumQValue(
 
 
 def singleTrainAgentStep(
-    agent_model: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet],
-    target_model: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet],
+    agent_model: Union[BaseDensePolicyNet, BaseSparsePolicyNet],
+    target_model: Union[BaseDensePolicyNet, BaseSparsePolicyNet],
     lossfunc: nn.Module,
     optimizer: torch.optim.Optimizer,
     replay_memory: ReplayMemory, 
@@ -109,7 +109,7 @@ def singleTrainAgentStep(
     ) = replay_memory.sampleBatch(n=batch_size, device=os.getenv("DEVICE"))
 
     # get agent and target Q values from networks
-    if isinstance(agent_model, SparsePolicyNet) or isinstance(agent_model, SparseConvPolicyNet):
+    if issubclass(agent_model.__class__, BaseSparsePolicyNet):
         agent_Qs, agent_sparsification_penalty = agent_model(current_observations)
         future_Qs, _ = target_model(future_observations)
     else:
@@ -119,7 +119,7 @@ def singleTrainAgentStep(
     optimal_Q = optimimumQValue(future_Qs, rewards, gamma, terminated_states)
     agent_Q = agent_Qs.gather(-1, actions.type(torch. int64)).reshape(-1)
     
-    if isinstance(agent_model, SparsePolicyNet) or isinstance(agent_model, SparseConvPolicyNet):
+    if issubclass(agent_model.__class__, BaseSparsePolicyNet):
         loss: torch.Tensor = lossfunc((agent_Q, agent_sparsification_penalty), optimal_Q)
     else:
         loss: torch.Tensor = lossfunc(agent_Q, optimal_Q)
@@ -138,8 +138,8 @@ def saveModelParams(params, filename:str, dir:str="../params"):
 
 def train(
         env: gym.Env, 
-        agent_model: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet],
-        target_model: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet],
+        agent_model: Union[BaseDensePolicyNet, BaseSparsePolicyNet],
+        target_model: Union[BaseDensePolicyNet, BaseSparsePolicyNet],
         replay_memory: ReplayMemory,
         lossfunc: nn.Module,
         optimizer: torch.optim.Optimizer,

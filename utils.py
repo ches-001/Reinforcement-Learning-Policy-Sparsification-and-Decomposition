@@ -5,7 +5,16 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from models import PolicyNet, ConvPolicyNet, SparsePolicyNet, SparseConvPolicyNet, L0Linear, L0Conv2d
+from models import (
+    BaseDensePolicyNet, 
+    BaseSparsePolicyNet, 
+    PolicyNet, 
+    SparsePolicyNet,
+    ConvPolicyNet,
+    SparseConvPolicyNet, 
+    L0Linear, 
+    L0Conv2d
+)
 from custom_env_wrappers import FormatFrameWrapper, MaxAndSkipEnv
 from torch.distributions.categorical import Categorical
 from typing import Tuple, Union, Dict, Optional, List
@@ -46,7 +55,7 @@ def compute_svd(
         return u, s, v_t
 
 
-def compile_sparse_model(model: Union[SparsePolicyNet, SparseConvPolicyNet]) -> Union[PolicyNet, ConvPolicyNet]:
+def compile_sparse_model(model: BaseSparsePolicyNet) -> BaseDensePolicyNet:
     if isinstance(model, SparseConvPolicyNet):
         _model = ConvPolicyNet(
             model.in_channels, 
@@ -54,7 +63,7 @@ def compile_sparse_model(model: Union[SparsePolicyNet, SparseConvPolicyNet]) -> 
             model.obs_h, 
             model.obs_w
         )
-    else:
+    elif isinstance(model, SparsePolicyNet):
         _model = PolicyNet(
             model.input_size, 
             model.output_size, 
@@ -80,14 +89,14 @@ def compile_sparse_model(model: Union[SparsePolicyNet, SparseConvPolicyNet]) -> 
 
 
 def low_rank_approximate_policy(
-        model: Union[PolicyNet, ConvPolicyNet, SparsePolicyNet, SparseConvPolicyNet], 
+        model: Union[BaseDensePolicyNet, BaseSparsePolicyNet], 
         rank: int,
         lra_w_decimals: int=6
-    ) -> Tuple[PolicyNet, float]:
+    ) -> Tuple[BaseDensePolicyNet, float]:
     
     model = copy.deepcopy(model)
     is_sparse = False
-    if isinstance(model, SparsePolicyNet) or isinstance(model, SparseConvPolicyNet):
+    if issubclass(model.__class__, BaseSparsePolicyNet):
         model = compile_sparse_model(model)
         is_sparse = True
 
@@ -130,8 +139,8 @@ def low_rank_approximate_policy(
     return model, percent_size_diff   
 
 
-def compute_weight_sparsity(model: Union[PolicyNet, SparsePolicyNet]) -> Tuple[Dict, float]:
-        if isinstance(model, SparsePolicyNet) or isinstance(model, SparseConvPolicyNet):
+def compute_weight_sparsity(model: Union[BaseDensePolicyNet, BaseSparsePolicyNet]) -> Tuple[Dict, float]:
+        if issubclass(model.__class__, BaseSparsePolicyNet):
               return model.compute_weight_sparsity()
         
         layers = list(
@@ -168,7 +177,7 @@ def make_atari_env(
 
 def evaluate_policy(
         env: gym.Env, 
-        policy_agent: Union[PolicyNet, ConvPolicyNet, SparsePolicyNet, SparseConvPolicyNet], 
+        policy_agent: Union[BaseDensePolicyNet, BaseSparsePolicyNet], 
         max_episode_steps: int=1000,
         close_env: bool=False,
         env_seed: Optional[int]=int(os.environ["ENV_SEED"])
@@ -183,7 +192,7 @@ def evaluate_policy(
         _obs = torch.tensor([obs], dtype=torch.float32, device=os.environ["DEVICE"])
 
         with torch.no_grad():
-            if isinstance(policy_agent, SparsePolicyNet) or isinstance(policy_agent, SparseConvPolicyNet):
+            if issubclass(policy_agent.__class__, BaseSparsePolicyNet):
                 action_logits, _ = policy_agent(_obs)
             else:
                 action_logits = policy_agent(_obs)
@@ -210,7 +219,7 @@ def evaluate_policy(
 
 def run_evaluation(
         env: gym.Env,
-        policy_agent: Union[PolicyNet, SparsePolicyNet, ConvPolicyNet, SparseConvPolicyNet],
+        policy_agent: Union[BaseDensePolicyNet, BaseSparsePolicyNet],
         max_episode_steps: int=10_000, 
         verbose: bool=True,
     ) -> Tuple[Union[int, float], float]:
@@ -267,7 +276,7 @@ def plot_train_performance(train_performance: Dict[str, List], best_rewards: Dic
     plt.plot(episodes_idx, train_performance["rewards"])
     plt.scatter([i+1 for i in best_rewards["episodes"]], best_rewards["rewards"], label="best_rewards", c="orange")
     plt.legend()
-    plt.title(f"Rewards plot for Dense Agent Policy (converged in {len(episodes_idx)} steps)")
+    plt.title(f"Rewards plot for Agent Policy (converged in {len(episodes_idx)} steps)")
     plt.xlabel("episodes")
     plt.ylabel("rewards")
     plt.show()
