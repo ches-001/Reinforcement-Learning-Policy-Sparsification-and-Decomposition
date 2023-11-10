@@ -162,7 +162,7 @@ def rollout(
         policy_agent: Union[BaseDensePolicyNet, BaseSparsePolicyNet], 
         value_agent: Union[BaseDensePolicyNet, BaseSparsePolicyNet],
         max_rollout_steps: Optional[int]=None, 
-    ) -> Dict[str, np.ndarray]:
+    ) -> Tuple[Dict[str, np.ndarray], float]:
 
     experience = {
         "observations": [],
